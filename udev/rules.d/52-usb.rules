@@ -1,0 +1,16 @@
+# uhubctl USB permissions for the mcp-uhubctl bench.
+# Grants unprivileged uhubctl (and the MCP server) control of the VIA hub
+# family on this bench plus the standard Linux 6.0+ sysfs port-disable nodes.
+# Install once with:
+#   sudo cp udev/rules.d/52-usb.rules /etc/udev/rules.d/
+#   sudo udevadm trigger --attr-match=subsystem=usb
+# then replug the hubs (or reboot) and verify `uhubctl` lists hubs WITHOUT sudo.
+
+# VIA Labs hub family on this bench (2109:2817 USB2, 2109:0817 USB3).
+SUBSYSTEM=="usb", DRIVER=="hub|usb", MODE="0666", ATTR{idVendor}=="2109"
+# Root hubs (needed for USB3 duality handling).
+SUBSYSTEM=="usb", DRIVER=="hub|usb", MODE="0666", ATTR{idVendor}=="1d6b"
+# Linux 6.0 or later: allow port power control via sysfs disable nodes
+# (harmless on older kernels).
+SUBSYSTEM=="usb", DRIVER=="hub|usb", \
+  RUN+="/bin/sh -c \"chmod -f 666 $sys$devpath/*port*/disable || true\""

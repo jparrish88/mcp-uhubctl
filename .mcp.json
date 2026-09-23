@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "usb-power": {
+      "command": "mcp-uhubctl",
+      "args": [],
+      "env": {
+        "RUST_LOG": "info"
+      }
+    }
+  }
+}
