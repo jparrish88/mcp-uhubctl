@@ -82,7 +82,8 @@ impl UhubServer {
     ) -> Result<CallToolResult, McpError> {
         let s = self
             .blocking(move || {
-                let rt = crate::hub::resolve_target(&args.target)?;
+                let rt = crate::hub::resolve_target(&args.target)
+                    .and_then(|r| crate::hub::materialize_target(&r))?;
                 let listing = crate::hub::list()?;
                 match crate::hub::find_device(&listing, &rt.vidpid, rt.serial.as_deref()) {
                     Ok(f) => {
@@ -155,6 +156,31 @@ impl UhubServer {
     }
 
     #[tool(
+        description = "List SEGGER J-Link probes seen by the J-Link software with serials, product names, and on-probe nicknames (read-only). Cross-reference serials with usb_targets (USB serials are zero-padded: JLink 1160003881 == USB 001160003881)."
+    )]
+    async fn usb_jlink_nicknames(&self) -> Result<CallToolResult, McpError> {
+        let s = self
+            .blocking(|| {
+                let emus = crate::hub::jlink_emu_list()?;
+                if emus.is_empty() {
+                    return Ok("(no J-Links seen by JLinkExe)".to_string());
+                }
+                let mut out = String::new();
+                for e in emus {
+                    out.push_str(&format!(
+                        "serial={} product={} nickname={}\n",
+                        e.serial,
+                        e.product,
+                        e.nickname.as_deref().unwrap_or("<not set>")
+                    ));
+                }
+                Ok(out)
+            })
+            .await?;
+        Ok(text(s))
+    }
+
+    #[tool(
         description = "Power OFF a board's USB port (both USB2+USB3 sides, so VBUS actually drops on USB3 hubs) and verify it leaves lsusb. Target is a nickname, short name, or USB serial substring. For a stuck board prefer usb_power_cycle."
     )]
     async fn usb_power_off(
@@ -204,7 +230,7 @@ impl ServerHandler for UhubServer {
             )
             .with_instructions(
                 "Controls USB per-port power for lab boards via uhubctl. \
-             Read-only: usb_list, usb_status, usb_targets. Power: usb_power_off, \
+             Read-only: usb_list, usb_status, usb_targets, usb_jlink_nicknames. Power: usb_power_off, \
              usb_power_on, usb_power_cycle — targets are nicknames, short names, \
              or USB serial substrings, resolved from a fresh listing every call, \
              both USB2+USB3 sides switched so VBUS drops. Raw location:port \

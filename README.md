@@ -12,6 +12,7 @@ stdio pattern as `mcp-nordic-ppk2`.
 |------|-----------|-------------|
 | `usb_list` | — | List all uhubctl-compatible hubs + per-port state (read-only). |
 | `usb_targets` | — | Configured nicknames + attached allowlisted boards with serials (read-only discovery for agents). |
+| `usb_jlink_nicknames` | — | SEGGER probes with on-probe nicknames via headless `JLinkExe ShowEmuList` (read-only; assign names once in J-Link Configurator). |
 | `usb_status` | `target` | Board's current hub:port, port state, lsusb presence (read-only). |
 | `usb_power_off` | `target` | Port off (USB2+USB3 sides), verify it leaves lsusb. |
 | `usb_power_on` | `target` | Port on (USB2+USB3 sides), verify re-enumeration. |
@@ -45,6 +46,34 @@ while two J-Links flash firmware) can pick exact targets:
 ```
 
 Override the path with `--boards-path <path>` or `BOARDS_PATH`.
+
+## SEGGER J-Link nicknames (on-probe names)
+
+J-Link probes can carry a nickname in firmware (≤32 ASCII chars, must contain
+a non-digit), assigned once via **J-Link Configurator** (double-click →
+Nickname) with J-Link software ≥V6.49a. It shows in the Configurator,
+selection dialogs, and `JLinkExe ShowEmuList` — and SEGGER flash/debug tools
+accept it in place of the serial (`-select usb="apollo510b"`).
+
+Incorporation here, two parts:
+
+1. **Read:** `usb_jlink_nicknames` runs headless `JLinkExe ShowEmuList` and
+   reports `serial / product / nickname` per probe. USB serials are the
+   zero-padded form (`001160003881`); JLinkExe strips leading zeros
+   (`1160003881`) — matching handles both.
+2. **Use:** a `boards.json` entry may give `jlink_nickname` instead of
+   `serial` — it resolves live on every call, so swapping in a replacement
+   probe needs zero config changes as long as it carries the same SEGGER
+   nickname:
+   ```json
+   { "boards": {
+       "apollo510b": { "vidpid": "1366:1024", "jlink_nickname": "apollo510b" }
+   } }
+   ```
+
+Workflow for a new probe: assign the nickname in J-Link Configurator →
+**power-cycle the probe** (required for it to take effect — `usb_power_cycle
+jlink` does this) → confirm with `usb_jlink_nicknames`.
 
 ## Safety
 

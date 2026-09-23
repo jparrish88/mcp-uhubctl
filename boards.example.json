@@ -1,6 +1,6 @@
 {
   "boards": {
-    "apollo510b": { "vidpid": "1366:1024", "serial": "001160003881" },
+    "apollo510b": { "vidpid": "1366:1024", "jlink_nickname": "apollo510b" },
     "apollo-spare": { "vidpid": "1366:1024", "serial": "001160002965" },
     "ppk2-main": { "vidpid": "1915:c00a", "serial": "D4184E334B85" },
     "sniffer": { "vidpid": "1915:522a" }

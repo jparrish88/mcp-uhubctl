@@ -40,6 +40,12 @@ pub struct BoardEntry {
     /// USB serial substring, e.g. "001160003881". Omit only if unique on bus.
     #[serde(default)]
     pub serial: Option<String>,
+    /// SEGGER J-Link nickname (assigned once via J-Link Configurator, shown
+    /// by `JLinkExe ShowEmuList`). Alternative to `serial` for J-Links:
+    /// resolved live, so a replacement probe keeps workingId with zero config
+    /// as long as it carries the same SEGGER nickname.
+    #[serde(default)]
+    pub jlink_nickname: Option<String>,
 }
 
 /// A resolved addressing target.
@@ -49,6 +55,8 @@ pub struct ResolvedTarget {
     pub key: String,
     pub vidpid: String,
     pub serial: Option<String>,
+    /// SEGGER nickname to resolve live (see [`materialize_target`]).
+    pub jlink_nickname: Option<String>,
 }
 
 fn boards_path() -> std::path::PathBuf {
@@ -103,6 +111,7 @@ pub fn resolve_target_with(
             key: lower,
             vidpid: b.vidpid.to_ascii_lowercase(),
             serial: b.serial.clone(),
+            jlink_nickname: b.jlink_nickname.clone(),
         });
     }
     if let Some(vidpid) = short_name_vidpid(&lower) {
@@ -110,6 +119,7 @@ pub fn resolve_target_with(
             key: lower,
             vidpid: vidpid.to_string(),
             serial: None,
+            jlink_nickname: None,
         });
     }
     // Otherwise a USB serial substring (must be plausibly serial-like).
@@ -118,6 +128,7 @@ pub fn resolve_target_with(
             key: format!("serial:{t}"),
             vidpid: String::new(),
             serial: Some(t.to_string()),
+            jlink_nickname: None,
         });
     }
     Err(anyhow!(
@@ -136,6 +147,144 @@ fn uhubctl_bin() -> String {
 
 fn lsusb_bin() -> String {
     std::env::var("LSUSB_BIN").unwrap_or_else(|_| "lsusb".to_string())
+}
+
+fn jlinkexe_bin() -> String {
+    std::env::var("JLINKEXE_BIN").unwrap_or_else(|_| "JLinkExe".to_string())
+}
+
+/// One J-Link seen by the SEGGER software.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JlinkEmu {
+    /// Serial as reported by JLinkExe (leading zeros stripped, e.g. "1160003881").
+    pub serial: String,
+    pub product: String,
+    /// None when `<not set>`.
+    pub nickname: Option<String>,
+}
+
+/// Parse `JLinkExe ShowEmuList` output into emulator entries. Pure, tested.
+pub fn parse_emu_list(output: &str) -> Vec<JlinkEmu> {
+    let mut emus = Vec::new();
+    for line in output.lines() {
+        let t = line.trim();
+        // "J-Link[0]: Connection: USB, Serial number: 1160003881,
+        //  ProductName: J-Link-OB-Apollo4-CortexM, Nickname: <not set>"
+        let Some(body) = t.split_once("Serial number:") else {
+            continue;
+        };
+        let serial = body.1.split(',').next().unwrap_or("").trim().to_string();
+        let product = body
+            .1
+            .split("ProductName:")
+            .nth(1)
+            .unwrap_or("")
+            .split(',')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let nick = body
+            .1
+            .split("Nickname:")
+            .nth(1)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if serial.is_empty() {
+            continue;
+        }
+        emus.push(JlinkEmu {
+            serial,
+            product,
+            nickname: if nick.is_empty() || nick == "<not set>" {
+                None
+            } else {
+                Some(nick)
+            },
+        });
+    }
+    emus
+}
+
+/// Run ShowEmuList and return the parsed emulator list.
+pub fn jlink_emu_list_with(bin: &str) -> Result<Vec<JlinkEmu>> {
+    // JLinkExe only accepts a real script file (/dev/stdin probing returned
+    // nothing), so stage one in temp and remove it afterwards.
+    let script_path =
+        std::env::temp_dir().join(format!("mcp-uhubctl-{}.jlink", std::process::id()));
+    std::fs::write(&script_path, "ShowEmuList\nExit\n").context("temp script write failed")?;
+    let script_arg = script_path.to_string_lossy().into_owned();
+    let out = Command::new(bin)
+        .args(["-NoGui", "1", "-CommanderScript", &script_arg])
+        .output()
+        .context("failed to spawn JLinkExe (is the J-Link software installed?)");
+    let _ = std::fs::remove_file(&script_path);
+    Ok(parse_emu_list(&String::from_utf8_lossy(&out?.stdout)))
+}
+
+pub fn jlink_emu_list() -> Result<Vec<JlinkEmu>> {
+    jlink_emu_list_with(&jlinkexe_bin())
+}
+
+/// Map a SEGGER nickname to the USB serial (zero-padded form) of the probe
+/// carrying it. Comparison is exact, then case-insensitive; numeric-only
+/// nicknames are refused (SEGGER tools read those as serial numbers).
+pub fn jlink_serial_for_nickname_with(bin: &str, nickname: &str) -> Result<String> {
+    if nickname.len() > 32 {
+        return Err(anyhow!("nickname exceeds SEGGER 32-char limit"));
+    }
+    if nickname.chars().all(|c| c.is_ascii_digit()) {
+        return Err(anyhow!(
+            "nickname {nickname:?} is numeric-only — SEGGER tools read that as a serial number; add a letter"
+        ));
+    }
+    let emus = jlink_emu_list_with(bin)?;
+    if let Some(e) = emus
+        .iter()
+        .find(|e| e.nickname.as_deref() == Some(nickname))
+    {
+        return Ok(e.serial.clone());
+    }
+    let lower = nickname.to_ascii_lowercase();
+    if let Some(e) = emus.iter().find(|e| {
+        e.nickname
+            .as_deref()
+            .is_some_and(|n| n.to_ascii_lowercase() == lower)
+    }) {
+        return Ok(e.serial.clone());
+    }
+    let have: Vec<String> = emus
+        .iter()
+        .map(|e| {
+            format!(
+                "{} ({})",
+                e.nickname.as_deref().unwrap_or("<not set>"),
+                e.serial
+            )
+        })
+        .collect();
+    Err(anyhow!(
+        "no J-Link carries nickname {nickname:?}; seen: {}",
+        have.join(", ")
+    ))
+}
+
+pub fn jlink_serial_for_nickname(nickname: &str) -> Result<String> {
+    jlink_serial_for_nickname_with(&jlinkexe_bin(), nickname)
+}
+
+/// Fill in a resolved target's USB serial from its SEGGER nickname, if any.
+/// USB serials are zero-padded (`001160003881`) while JLinkExe strips leading
+/// zeros (`1160003881`); matching strips zeros on both sides.
+pub fn materialize_target(rt: &ResolvedTarget) -> Result<ResolvedTarget> {
+    if let Some(nick) = &rt.jlink_nickname {
+        let serial = jlink_serial_for_nickname(nick)?;
+        let mut rt = rt.clone();
+        rt.serial = Some(serial);
+        return Ok(rt);
+    }
+    Ok(rt.clone())
 }
 
 /// Run uhubctl with args, return combined stdout+stderr. Non-zero exit is an error.
@@ -335,6 +484,7 @@ pub fn power_cycle_with(
         return Err(anyhow!("off_seconds must be in 1..=120"));
     }
     let rt = resolve_target_with(target, boards)?;
+    let rt = materialize_target(&rt)?;
     let listing = match list_override {
         Some(s) => s.to_string(),
         None => run_uhubctl_with(ubin, &[])?,
@@ -386,7 +536,7 @@ pub fn power_cycle(target: &str, off_seconds: u64) -> Result<String> {
 
 /// Power off (duality on) and verify the device leaves lsusb.
 pub fn power_off(target: &str) -> Result<String> {
-    let rt = resolve_target(target)?;
+    let rt = materialize_target(&resolve_target(target)?)?;
     let found = locate(&rt, &list()?)?;
     save_last(&rt.key, &found.location, &found.port);
     let out = set_power(&found.location, &found.port, "off")?;
@@ -403,7 +553,7 @@ pub fn power_off(target: &str) -> Result<String> {
 /// currently off it is absent from the listing, so fall back to the last-known
 /// location recorded by a previous off/cycle call.
 pub fn power_on(target: &str) -> Result<String> {
-    let rt = resolve_target(target)?;
+    let rt = materialize_target(&resolve_target(target)?)?;
     let id_hint = if rt.vidpid.is_empty() {
         rt.serial.clone().unwrap_or_default()
     } else {
@@ -486,6 +636,7 @@ Current status for hub 1-12 [2109:2817 VIA Labs, Inc. USB2.0 Hub, USB 2.10, 4 po
             BoardEntry {
                 vidpid: "1366:1024".to_string(),
                 serial: Some("001160002965".to_string()),
+                jlink_nickname: None,
             },
         );
         let r = resolve_target_with("apollo510b", &boards).unwrap();
@@ -514,5 +665,32 @@ Current status for hub 1-12 [2109:2817 VIA Labs, Inc. USB2.0 Hub, USB 2.10, 4 po
             Some("1366:1024")
         );
         assert_eq!(attached_vidpid("Port 2: 0100 power"), None);
+    }
+
+    const EMU_LIST: &str = "\
+J-Link Command File read successfully.
+Processing script file...
+J-Link>ShowEmuList
+J-Link[0]: Connection: USB, Serial number: 1160002965, ProductName: J-Link-OB-Test, Nickname: apollo510b
+J-Link[1]: Connection: USB, Serial number: 1160003881, ProductName: J-Link-OB-Apollo4-CortexM, Nickname: <not set>
+J-Link>Exit
+Script processing completed.";
+
+    #[test]
+    fn parse_emu_list_reads_nicknames() {
+        let emus = parse_emu_list(EMU_LIST);
+        assert_eq!(emus.len(), 2);
+        assert_eq!(emus[0].serial, "1160002965");
+        assert_eq!(emus[0].nickname.as_deref(), Some("apollo510b"));
+        assert_eq!(emus[1].nickname, None);
+    }
+
+    #[test]
+    fn nickname_serial_matches_zero_padded_usb() {
+        // JLinkExe strips leading zeros; USB keeps them. Substring matching
+        // must bridge both directions.
+        assert!("001160003881".contains("1160003881"));
+        let f = find_device(LISTING, "1366:1024", Some("1160003881")).unwrap();
+        assert_eq!(f.port.as_str(), "1");
     }
 }

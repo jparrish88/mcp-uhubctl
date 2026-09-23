@@ -23,6 +23,7 @@ fn boards() -> HashMap<String, hub::BoardEntry> {
         hub::BoardEntry {
             vidpid: "1366:1024".to_string(),
             serial: Some("001160002965".to_string()),
+            jlink_nickname: None,
         },
     );
     m
@@ -62,6 +63,41 @@ fn unknown_target_is_rejected() {
     let (ubin, lbin) = stubs();
     let err = hub::power_cycle_with("microwave!", 1, &ubin, &lbin, &boards(), None).unwrap_err();
     assert!(format!("{err:#}").contains("unknown target"));
+}
+
+fn boards_nick() -> HashMap<String, hub::BoardEntry> {
+    let mut m = HashMap::new();
+    m.insert(
+        "fonz".to_string(),
+        hub::BoardEntry {
+            vidpid: "1366:1024".to_string(),
+            serial: None,
+            jlink_nickname: Some("apollo510b".to_string()),
+        },
+    );
+    m
+}
+
+fn jlink_stub() -> String {
+    format!(
+        "{}/tests/stubs/jlinkexe-fake.sh",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[test]
+fn cycle_by_segger_nickname_resolves_live_serial() {
+    let (ubin, lbin) = stubs();
+    // SAFETY: only this test reads JLINKEXE_BIN (its boards carry nicknames).
+    unsafe { std::env::set_var("JLINKEXE_BIN", jlink_stub()) };
+    unsafe { std::env::set_var("FAKE_PRESENT", "1366:1024") };
+    let report = hub::power_cycle_with("fonz", 1, &ubin, &lbin, &boards_nick(), None).unwrap();
+    // apollo510b -> JLink serial 1160002965 -> USB 001160002965 on 1-11:4.
+    assert!(report.contains("1-11:4"), "wrong port routed:\n{report}");
+    assert!(
+        report.contains("lsusb present=true"),
+        "no verify:\n{report}"
+    );
 }
 
 #[test]
