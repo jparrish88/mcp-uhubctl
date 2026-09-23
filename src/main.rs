@@ -40,20 +40,19 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    if let (ubin, bpath) = resolve_args() {
-        if let Some(p) = ubin {
-            if !(std::path::Path::new(&p).exists() || p.contains('/')) {
-                return Err(anyhow!("uhubctl binary not found at {p:?}"));
-            }
-            // SAFETY: single-threaded at startup, before any threads spawn.
-            unsafe { std::env::set_var("UHUBCTL_BIN", &p) };
-            tracing::info!(uhubctl_bin = %p, "using uhubctl binary");
+    let (ubin, bpath) = resolve_args();
+    if let Some(p) = ubin {
+        if !(std::path::Path::new(&p).exists() || p.contains('/')) {
+            return Err(anyhow!("uhubctl binary not found at {p:?}"));
         }
-        if let Some(p) = bpath {
-            // SAFETY: single-threaded at startup, before any threads spawn.
-            unsafe { std::env::set_var("BOARDS_PATH", &p) };
-            tracing::info!(boards_path = %p, "using boards file");
-        }
+        // SAFETY: single-threaded at startup, before any threads spawn.
+        unsafe { std::env::set_var("UHUBCTL_BIN", &p) };
+        tracing::info!(uhubctl_bin = %p, "using uhubctl binary");
+    }
+    if let Some(p) = bpath {
+        // SAFETY: single-threaded at startup, before any threads spawn.
+        unsafe { std::env::set_var("BOARDS_PATH", &p) };
+        tracing::info!(boards_path = %p, "using boards file");
     }
     let service = UhubServer::new().serve(stdio()).await?;
     service.waiting().await?;
